@@ -34,6 +34,7 @@ fn complete_model() -> MockLlm {
     MockLlm::new().with_responder(|req| {
         if let Some(id) = task_id(req) {
             assert!(!req.tools.iter().any(|t| t.name == "SendMessage" || t.name == "DelegateTask"));
+            assert_eq!(req.options.required_tool, None, "task turns must not force an unavailable SendMessage");
             return LlmResponse::tool_call("CompleteTask", json!({
                 "task_id": id, "status":"completed", "summary":"All three algorithms and their tests are submitted.",
                 "verification":"Test program included; independently inspect before accepting the claims.", "files":["optimized_sorts.py"]

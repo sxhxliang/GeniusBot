@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    Binary, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent, Tool, ToolCall, ToolResponse,
+    Binary, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent, Tool, ToolCall, ToolChoice, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
@@ -436,6 +436,9 @@ impl GenaiProvider {
         }
         if self.sends_prompt_cache_key {
             options.prompt_cache_key = request.options.prompt_cache_key.clone();
+        }
+        if let Some(name) = &request.options.required_tool {
+            options = options.with_tool_choice(ToolChoice::tool(name.clone()));
         }
         options
     }

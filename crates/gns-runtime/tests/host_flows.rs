@@ -130,6 +130,67 @@ async fn silent_visible_turn_gets_one_reminder() {
 }
 
 #[tokio::test]
+async fn json_message_text_is_recovered_by_a_native_send_message_call() {
+    // Replay Coder's failure: the model prints SendMessage arguments even
+    // though the native tool is available. A nudge must require that tool.
+    let raw = r#"{"type":"text","content":"好的，我来写一个 ChatGPT 登录页面。"}"#;
+    let mock = MockLlm::scripted(vec![
+        LlmResponse::text(raw),
+        LlmResponse::tool_call(SEND_MESSAGE_TOOL_NAME, json!({"type":"text"})), // invalid: still owes delivery
+        send_message("好的，我来写一个 ChatGPT 登录页面。"),
+        LlmResponse::text("done"),
+    ]);
+    let (host, _dir) = open_host(mock.clone()).await;
+    let mut rx = host.subscribe();
+    let agent = host.create_agent(AgentSpec::new("Coder", "")).await.unwrap();
+    let result = host.send_user_message(agent.id.as_str(), "写一个 ChatGPT 登录页面", vec![]).await.unwrap();
+    assert_eq!(result.sent_message_count, 1);
+    assert!(result.error.is_none());
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4);
+    for request in &requests[..3] {
+        assert_eq!(request.options.required_tool.as_deref(), Some(SEND_MESSAGE_TOOL_NAME));
+    }
+    assert_eq!(requests[3].options.required_tool, None, "release tool choice after successful delivery");
+    assert!(
+        matches!(requests[1].messages.last(), Some(LlmMessage::User { text, .. }) if text.contains("left the user without the result"))
+    );
+    let entries = host.transcript(agent.id.as_str(), 50).unwrap();
+    assert!(entries.iter().any(|e| matches!(e, TranscriptEntry::AssistantText { content, .. } if content == raw)));
+    assert_eq!(entries.iter().filter(|e| matches!(e, TranscriptEntry::SendMessage { .. })).count(), 1);
+    let events = collect_until(&mut rx, |e| matches!(e, HostEvent::TurnEnded { .. }), Duration::from_secs(2)).await;
+    assert_eq!(events.iter().filter(|e| matches!(e, HostEvent::SendMessage { .. })).count(), 1);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_reply_requirement_respects_ack_opt_out_and_quiet_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = AgentHostConfig::new(dir.path());
+    config.kickstart_new_agents = false;
+    config.memory_extraction = false;
+    config.dream_after_idle = None;
+    config.enforce_start_of_turn_ack = false;
+    let mock = MockLlm::scripted(vec![LlmResponse::text("private"), send_message("hello"), LlmResponse::text("done")]);
+    let host = AgentHost::open(config, Arc::new(mock.clone())).await.unwrap();
+    let agent = host.create_agent(AgentSpec::new("Coder", "")).await.unwrap();
+    host.send_user_message(agent.id.as_str(), "hello", vec![]).await.unwrap();
+    assert_eq!(mock.requests()[0].options.required_tool, None);
+    assert_eq!(mock.requests()[1].options.required_tool.as_deref(), Some(SEND_MESSAGE_TOOL_NAME));
+    assert_eq!(mock.requests()[2].options.required_tool, None);
+
+    let mut rx = host.subscribe();
+    host.enqueue(agent.id.as_str(), gns_runtime::RunJob::hidden("nothing to report", RunOptions::automation())).unwrap();
+    let events = collect_until(&mut rx, |e| matches!(e, HostEvent::TurnEnded { .. }), Duration::from_secs(2)).await;
+    assert!(
+        events.iter().any(|e| matches!(e, HostEvent::TurnEnded { result, .. } if result.error.is_none() && result.sent_message_count == 0))
+    );
+    assert_eq!(mock.requests().last().unwrap().options.required_tool, None);
+    assert_eq!(mock.call_count(), 4, "quiet turns need no reply nudge");
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn path_escape_is_denied_and_reported_to_model() {
     let mock = MockLlm::scripted(vec![
         LlmResponse::tool_call(READ_TOOL_NAME, json!({"path": "/etc/hosts"}))
@@ -773,15 +834,20 @@ async fn reply_nudge_runs_after_a_silent_user_turn_and_stops_at_the_cap() {
     // A model that never replies is nudged MAX_REPLY_NUDGES times, then the turn ends.
     let mock2 = MockLlm::new().with_responder(|_| LlmResponse::text("never"));
     let (host2, _dir2) = open_host(mock2.clone()).await;
+    let mut rx2 = host2.subscribe();
     let agent2 = host2.create_agent(AgentSpec::new("B", "")).await.unwrap();
     let result2 = host2.send_user_message(agent2.id.as_str(), "hello?", vec![]).await.unwrap();
     assert_eq!(result2.sent_message_count, 0);
+    assert!(result2.error.as_deref().is_some_and(|e| e.contains("without delivering a reply through SendMessage")));
     let nudges2 = mock2
         .requests()
         .iter()
         .filter(|r| matches!(r.messages.last(), Some(LlmMessage::User { text, .. }) if text.contains("left the user without the result")))
         .count();
     assert_eq!(nudges2, MAX_REPLY_NUDGES);
+    let events = collect_until(&mut rx2, |e| matches!(e, HostEvent::TurnEnded { .. }), Duration::from_secs(2)).await;
+    assert!(events.iter().any(|e| matches!(e, HostEvent::Error { message, .. } if Some(message) == result2.error.as_ref())));
+    assert!(!events.iter().any(|e| matches!(e, HostEvent::SendMessage { .. })), "private text must never be auto-delivered");
     host.shutdown().await;
     host2.shutdown().await;
 }
@@ -791,8 +857,8 @@ async fn closing_send_nudge_after_ack_then_silent_tools() {
     let mock = MockLlm::scripted(vec![
         send_message("On it."),
         LlmResponse::tool_call(SHELL_TOOL_NAME, json!({"command": "printf x > a.txt"})),
-        LlmResponse::text(""),       // ends silently: result never delivered
-        send_message("Wrote a.txt"), // CLOSING_SEND_NUDGE turn
+        LlmResponse::text(r#"{"type":"text","content":"Wrote a.txt"}"#), // private text is still not delivery
+        send_message("Wrote a.txt"),                                     // CLOSING_SEND_NUDGE turn
         LlmResponse::text("done"),
     ]);
     let (host, _dir) = open_host(mock.clone()).await;
@@ -809,6 +875,8 @@ async fn closing_send_nudge_after_ack_then_silent_tools() {
         })
         .collect();
     assert_eq!(sent, vec!["On it.", "Wrote a.txt"]);
+    assert_eq!(mock.requests()[3].options.required_tool.as_deref(), Some(SEND_MESSAGE_TOOL_NAME));
+    assert_eq!(mock.requests()[4].options.required_tool, None);
     assert!(mock.requests().iter().any(|r| matches!(r.messages.last(), Some(LlmMessage::User { text, .. }) if text.contains("acknowledged the user and then ran tool calls"))));
     host.shutdown().await;
 }
@@ -870,6 +938,9 @@ async fn kickstart_clears_introduction_pending_only_after_greeting() {
     );
     let pending: bool = host.agent_handle(agent.id.as_str()).unwrap().db.get_json(kv_keys::INTRODUCTION_PENDING).unwrap().unwrap();
     assert!(!pending);
+    assert_eq!(mock.requests()[0].options.required_tool.as_deref(), Some(SEND_MESSAGE_TOOL_NAME));
+    assert_eq!(mock.requests()[1].options.required_tool.as_deref(), Some(SEND_MESSAGE_TOOL_NAME));
+    assert_eq!(mock.requests()[2].options.required_tool, None);
     host.shutdown().await;
 }
 

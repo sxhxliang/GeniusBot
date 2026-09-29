@@ -179,7 +179,7 @@ pub struct RunResult {
     /// Set when the turn ended with an error.
     pub error: Option<String>,
     /// The turn acknowledged the user first, then its last tool step had no
-    /// delivery call and the model ended without text: results may be undelivered.
+    /// delivery call: results may be undelivered, even if private text followed.
     pub ended_on_silent_tool_calls: bool,
 }
 

@@ -59,6 +59,10 @@ pub struct LlmOptions {
     /// Stable key for provider-side prompt caching (e.g. the agent id). A
     /// hint: providers drop it for endpoints that do not accept it.
     pub prompt_cache_key: Option<String>,
+    /// Require a native call to this tool. Plain assistant text does not
+    /// satisfy this constraint. Unset after the required delivery succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_tool: Option<String>,
 }
 
 /// A complete request.

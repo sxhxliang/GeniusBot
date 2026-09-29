@@ -51,7 +51,7 @@ pub(crate) async fn run_job(
         source: job.options.source,
     });
     let started_at = now_ms();
-    let mut result = match run_inner(&host, &handle, &run_id, &job, &cancel).await {
+    let mut result = match run_inner(&host, &handle, &run_id, &job, &cancel, false).await {
         Ok(result) => result,
         Err(e) => {
             host.emit(HostEvent::Error { agent_id: Some(handle.id.clone()), run_id: Some(run_id.clone()), message: e.to_string() });
@@ -63,7 +63,7 @@ pub(crate) async fn run_job(
         let mut nudge = job.clone();
         nudge.already_persisted = false;
         nudge.prompt = "Your task has no submitted result. Call CompleteTask with full output files, or UpdateTask with status=blocked and the exact reason. A chat message is not a submission.".to_owned();
-        merge_nudge(&mut result, run_inner(&host, &handle, &run_id, &nudge, &cancel).await, &host, &handle, &run_id);
+        merge_nudge(&mut result, run_inner(&host, &handle, &run_id, &nudge, &cancel, false).await, &host, &handle, &run_id);
     }
     host.settle_task_run(&run_id, &result);
     host.emit(HostEvent::RunEnded { agent_id: handle.id.clone(), run_id: run_id.clone() });
@@ -101,7 +101,14 @@ async fn ensure_user_reply(
     cancel: &CancellationToken,
 ) {
     let options = &job.options;
-    if options.is_silence_allowed || options.group_id.is_some() || !job.persist || result.aborted || result.superseded {
+    if options.is_silence_allowed
+        || options.group_id.is_some()
+        || options.task_id.is_some()
+        || !job.persist
+        || result.aborted
+        || result.superseded
+        || result.error.is_some()
+    {
         return;
     }
     let epoch_current = || options.source != RunSource::User || job.epoch == handle.current_turn_epoch();
@@ -112,21 +119,35 @@ async fn ensure_user_reply(
         attempts += 1;
         tracing::info!(agent = %handle.id, attempt = attempts, "reply nudge: turn ended without SendMessage");
         let nudge = RunJob::hidden(REPLY_NUDGE_PROMPT, nudge_options.clone());
-        merge_nudge(result, run_inner(host, handle, run_id, &nudge, cancel).await, host, handle, run_id);
-        if result.aborted {
+        merge_nudge(result, run_inner(host, handle, run_id, &nudge, cancel, true).await, host, handle, run_id);
+        if result.aborted || result.error.is_some() {
             break;
         }
     }
+    let mut closing_delivery_missing = false;
     if options.source == RunSource::User
         && result.ended_on_silent_tool_calls
         && !result.aborted
+        && result.error.is_none()
         && !result.awaiting_user_selection
         && !cancel.is_cancelled()
         && epoch_current()
     {
         tracing::info!(agent = %handle.id, "closing send nudge: acknowledged, then silent tool calls");
         let nudge = RunJob::hidden(CLOSING_SEND_NUDGE_PROMPT, nudge_options);
-        merge_nudge(result, run_inner(host, handle, run_id, &nudge, cancel).await, host, handle, run_id);
+        let sent_before = result.sent_message_count;
+        merge_nudge(result, run_inner(host, handle, run_id, &nudge, cancel, true).await, host, handle, run_id);
+        closing_delivery_missing = result.sent_message_count == sent_before;
+    }
+    if (result.delivery_owed() || closing_delivery_missing)
+        && result.error.is_none()
+        && !result.aborted
+        && !cancel.is_cancelled()
+        && epoch_current()
+    {
+        let message = "The model ended without delivering a reply through SendMessage, even after the reply reminders. Plain assistant text was not sent to the user.".to_owned();
+        host.emit(HostEvent::Error { agent_id: Some(handle.id.clone()), run_id: Some(run_id.clone()), message: message.clone() });
+        result.error = Some(message);
     }
 }
 
@@ -170,10 +191,7 @@ struct TurnShape {
 }
 
 impl TurnShape {
-    fn ended_on_silent_tool_calls(&self, final_text_blank: bool) -> bool {
-        if !final_text_blank {
-            return false;
-        }
+    fn ended_on_silent_tool_calls(&self) -> bool {
         let Some(&(tail_delivery, _)) = self.tool_steps.last() else { return false };
         if tail_delivery {
             return false;
@@ -199,6 +217,7 @@ async fn run_inner(
     run_id: &RunId,
     job: &RunJob,
     cancel: &CancellationToken,
+    require_reply: bool,
 ) -> Result<RunResult, HostError> {
     let options = &job.options;
     let persist = job.persist;
@@ -337,13 +356,17 @@ async fn run_inner(
     // `StartOfTurnAckReminderMiddleware`): active on every non-subagent,
     // non-silence turn.
     let reminders_active = !options.is_silence_allowed && options.source != RunSource::Subagent;
+    let require_initial_reply = require_reply
+        || (reminders_active
+            && options.group_id.is_none()
+            && options.task_id.is_none()
+            && (options.source == RunSource::Kickstart || (options.source == RunSource::User && host.config.enforce_start_of_turn_ack)));
     let mut non_send_calls_since_send = 0usize;
     let mut text_send_this_turn = false;
     let mut any_send_this_turn = false;
     let mut early_reminder_fired_this_streak = false;
     let mut shape = TurnShape::default();
     let mut step = 0usize;
-    let mut last_text_blank = true;
     loop {
         if step >= max_steps {
             // The original loop simply stops at the cap.
@@ -384,7 +407,12 @@ async fn run_inner(
             system: system.clone(),
             messages: messages.clone(),
             tools: specs.clone(),
-            options: LlmOptions { prompt_cache_key: Some(handle.id.to_string()), ..Default::default() },
+            options: LlmOptions {
+                prompt_cache_key: Some(handle.id.to_string()),
+                required_tool: (require_initial_reply && result.delivery_owed() && specs.iter().any(|s| s.name == SEND_MESSAGE_TOOL_NAME))
+                    .then(|| SEND_MESSAGE_TOOL_NAME.to_owned()),
+                ..Default::default()
+            },
         };
         for middleware in host.middlewares() {
             middleware.before_llm_call(&handle.id, run_id, step, &mut request).await;
@@ -400,7 +428,6 @@ async fn run_inner(
         };
         result.usage.add(&response.usage);
         result.last_prompt_tokens = response.usage.prompt_tokens;
-        last_text_blank = response.text.as_deref().map(str::trim).unwrap_or("").is_empty();
         if let Some(text) = response.text.as_ref().filter(|t| !t.trim().is_empty()) {
             result.text = text.clone();
             if persist {
@@ -476,7 +503,7 @@ async fn run_inner(
             break;
         }
     }
-    result.ended_on_silent_tool_calls = shape.ended_on_silent_tool_calls(last_text_blank) && !result.aborted;
+    result.ended_on_silent_tool_calls = shape.ended_on_silent_tool_calls() && !result.aborted;
     Ok(result)
 }
 

@@ -37,8 +37,8 @@ pub struct AgentHostConfig {
     /// Consolidate memory ("dream") once an agent has been idle this long and
     /// has enough new log facts. `None` disables it.
     pub dream_after_idle: Option<Duration>,
-    /// Refuse the first step's tool calls on a user-opened turn until the
-    /// agent has sent a SendMessage acknowledgement.
+    /// Require SendMessage via native tool choice on a user-opened turn
+    /// until the agent has delivered its initial reply.
     pub enforce_start_of_turn_ack: bool,
     /// Step budget for subagents.
     pub subagent_max_steps: usize,

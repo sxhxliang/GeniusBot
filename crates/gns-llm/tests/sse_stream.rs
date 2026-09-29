@@ -104,6 +104,37 @@ async fn gateway_requests_carry_no_prompt_cache_key() {
     let raw = received.await.unwrap();
     assert!(raw.contains("\"model\":\"fake-model\""), "the body was captured: {raw}");
     assert!(!raw.contains("prompt_cache_key"), "{raw}");
+    assert!(!raw.contains("tool_choice"), "ordinary requests keep automatic tool selection: {raw}");
+}
+
+#[tokio::test]
+async fn required_send_message_reaches_streaming_and_non_streaming_gateways() {
+    let stream_body: &'static str = Box::leak(format!("{TOOL_CHUNK}data: [DONE]\n\n").into_boxed_str());
+    let json_body = r#"{"id":"x","object":"chat.completion","model":"fake-model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"SendMessage","arguments":"{\"type\":\"text\",\"content\":\"hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+    for stream in [true, false] {
+        let (base, received) = serve_once_with(
+            "200 OK",
+            if stream { "text/event-stream" } else { "application/json" },
+            if stream { stream_body } else { json_body },
+        )
+        .await;
+        let mut config = GenaiConfig::openai_compatible(base, "fake-model").with_api_key("k");
+        config.stream = stream;
+        let p = GenaiProvider::new(config).unwrap();
+        let mut req = request();
+        req.tools.push(ToolSpec {
+            name: SEND_MESSAGE_TOOL_NAME.into(),
+            description: "Send a message".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"type":{"type":"string"},"content":{"type":"string"}},"required":["type","content"]}),
+        });
+        req.options.required_tool = Some(SEND_MESSAGE_TOOL_NAME.into());
+        let response = p.complete(req, CancellationToken::new(), &|_| {}).await.unwrap();
+        assert_eq!(response.tool_calls[0].name, SEND_MESSAGE_TOOL_NAME);
+        let raw = received.await.unwrap();
+        let body: serde_json::Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["tool_choice"], serde_json::json!({"type":"function","function":{"name":"SendMessage"}}));
+        assert_eq!(body["tools"][0]["function"]["name"], SEND_MESSAGE_TOOL_NAME);
+    }
 }
 
 #[tokio::test]
