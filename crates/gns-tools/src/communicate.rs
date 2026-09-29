@@ -467,6 +467,8 @@ mod tests {
         let schema = schema_for_args::<SendMessageArgs>();
         let kinds: Vec<&str> = schema["properties"]["type"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         assert_eq!(kinds, ["text", "attachment", "widget", "secret-request"]);
+        let required = schema["required"].as_array().expect("schema required fields");
+        assert!(required.iter().any(|field| field.as_str() == Some("type")), "{required:?}");
         let style = &schema["properties"]["widget"]["properties"]["options"]["items"]["properties"]["style"];
         assert_eq!(style["type"], "string");
         assert_eq!(style["enum"].as_array().unwrap().len(), 3);

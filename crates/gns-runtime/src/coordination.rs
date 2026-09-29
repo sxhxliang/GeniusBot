@@ -70,7 +70,7 @@ impl HostInner {
         let store = self.coordination.clone();
         let id = id.to_owned();
         let path = tokio::task::spawn_blocking(move || store.fetch(&id, &workspace)).await.map_err(HostError::storage)??;
-        Ok(path.display().to_string())
+        Ok(dunce::simplified(&path).display().to_string())
     }
     pub(crate) fn task_for_run(&self, run: &RunId) -> Option<TaskRecord> {
         let id = self.coordination_runtime.runs.lock().ok()?.get(run)?.task.clone()?;
@@ -81,6 +81,11 @@ impl HostInner {
         task.check_executor(agent)?;
         let runs = self.coordination_runtime.runs.lock().map_err(HostError::storage)?;
         let context = runs.get(run).ok_or_else(|| HostError::invalid("task operation requires an active task run"))?;
+        if context.task.is_none() {
+            return Err(HostError::invalid(
+                "task operation requires an active delegated task run, not a normal chat turn. Use GetTask to inspect the task; resume blocked tasks from their task card. Do not retry UpdateTask or CompleteTask in this chat.",
+            ));
+        }
         if &context.agent != agent || context.task.as_deref() != Some(id) || context.attempt != task.attempt {
             return Err(HostError::invalid("stale or unrelated task run"));
         }

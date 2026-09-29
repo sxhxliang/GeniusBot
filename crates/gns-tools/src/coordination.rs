@@ -82,7 +82,7 @@ task_tool!(
 task_tool!(
     UpdateTask,
     UpdateTaskArgs,
-    "Report meaningful progress with status=running, or status=blocked plus the exact missing input. A blocked task stops this turn and can be resumed from its task card. This updates the original conversation, not your private chat. Only the assigned executor can update a task.",
+    "Report meaningful progress with status=running, or status=blocked plus the exact missing input. A blocked task stops this turn and can be resumed from its task card. This updates the original conversation, not your private chat. Only the assigned executor in the active delegated task run can update it; an old task_id in ordinary chat is insufficient.",
     ctx,
     args,
     {
@@ -97,7 +97,7 @@ task_tool!(
 task_tool!(
     CompleteTask,
     CompleteTaskArgs,
-    "Submit a delegated task exactly once with status=completed or failed, a summary and verification notes. Supply actual full output file paths in files (or existing artifact_ids), including tests and logs when relevant. The host snapshots the bytes, delivers downloadable files to the original conversation and wakes the requester. Do NOT paste file contents, invent sandbox links or separately SendMessage/SendToAgent a completion. A successful file task requires files. This ends the task turn.",
+    "Submit a delegated task exactly once with status=completed or failed, a summary and verification notes. Only use this in the active delegated task run, never in ordinary chat with an old task_id. Supply actual full output file paths in files (or existing artifact_ids), including tests and logs when relevant. The host snapshots the bytes, delivers downloadable files to the original conversation and wakes the requester. Do NOT paste file contents, invent sandbox links or separately SendMessage/SendToAgent a completion. A successful file task requires files. This ends the task turn.",
     ctx,
     args,
     {

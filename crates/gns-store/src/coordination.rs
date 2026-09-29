@@ -74,6 +74,10 @@ impl CoordinationStore {
             output.sync_all()?;
             drop(output);
             std::fs::rename(&pending, dir.join("content"))?;
+            // Directory fsync is a Unix operation; opening a directory as a
+            // File fails with AccessDenied on Windows. The content was synced
+            // above on every platform before committing its metadata.
+            #[cfg(unix)]
             File::open(&dir)?.sync_all()?;
             let name =
                 source.file_name().and_then(|s| s.to_str()).ok_or_else(|| HostError::invalid("file name must be valid UTF-8"))?.to_owned();

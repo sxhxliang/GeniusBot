@@ -977,6 +977,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "dunce",
  "futures",
  "gns-core",
  "gns-llm",
@@ -1040,6 +1041,8 @@ name = "gns-tools"
 version = "0.1.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "dunce",
  "gns-core",
  "regex",
  "schemars 1.2.2",

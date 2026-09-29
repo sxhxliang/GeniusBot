@@ -49,6 +49,103 @@ fn complete_model() -> MockLlm {
 }
 
 #[tokio::test]
+async fn chat_with_an_old_task_id_cannot_submit_but_resumed_task_can() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockLlm::new().with_responder(|req| {
+        if let Some(id) = task_id(req) {
+            assert!(req.tools.iter().any(|t| t.name == "UpdateTask"));
+            assert!(req.tools.iter().any(|t| t.name == "CompleteTask"));
+            assert!(!req.tools.iter().any(|t| t.name == "SendMessage"));
+            let resumed = req.messages.iter().any(|m| matches!(m, LlmMessage::User { text, .. } if text.contains("ready to resume")));
+            return if resumed {
+                LlmResponse::tool_call("CompleteTask", json!({"task_id":id,"status":"completed","summary":"done"}))
+            } else {
+                LlmResponse::tool_call("UpdateTask", json!({"task_id":id,"status":"blocked","summary":"Need input"}))
+            };
+        }
+        assert!(!req.tools.iter().any(|t| matches!(t.name.as_str(), "CompleteTask" | "UpdateTask")));
+        assert!(req.tools.iter().any(|t| t.name == "GetTask"));
+        if let Some(LlmMessage::User { text, .. }) = req.messages.last()
+            && let Some(rest) = text.split("continue old task ").nth(1)
+        {
+            let id = rest.split_whitespace().next().unwrap();
+            // Even a model that ignores the tool list cannot submit from chat.
+            return LlmResponse::tool_call("CompleteTask", json!({"task_id":id,"status":"failed","summary":"give up"}));
+        }
+        if let Some(LlmMessage::ToolResults(results)) = req.messages.last()
+            && let Some(result) = results.iter().find(|r| r.name == "CompleteTask")
+        {
+            assert!(result.content.contains("requires the executor's active delegated task run"), "{}", result.content);
+            return LlmResponse::tool_call("SendMessage", json!({"type":"text","content":"Resume the blocked task from its task card."}));
+        }
+        LlmResponse::text("done")
+    });
+    let host = AgentHost::open(config(dir.path()), Arc::new(model)).await.unwrap();
+    let planner = host.create_agent(AgentSpec::new("Planner", "")).await.unwrap();
+    let coder = host.create_agent(AgentSpec::new("Coder", "")).await.unwrap();
+    let task = host
+        .delegate_task(
+            planner.id.as_str(),
+            DelegateTaskRequest { target_id: coder.id.to_string(), task: "report".into(), require_files: false, ..Default::default() },
+        )
+        .await
+        .unwrap();
+    eventually(|| host.task(&task.id).unwrap().status == TaskStatus::Blocked).await;
+    let before = host.task(&task.id).unwrap();
+    let chat = host.send_user_message(coder.id.as_str(), format!("continue old task {}", task.id), vec![]).await.unwrap();
+    assert_eq!(chat.sent_message_count, 1);
+    assert_eq!(host.task(&task.id).unwrap().revision, before.revision);
+    assert_eq!(host.task(&task.id).unwrap().status, TaskStatus::Blocked);
+    host.resume_task(&task.id, "ready to resume".into()).unwrap();
+    eventually(|| host.task(&task.id).unwrap().status == TaskStatus::Completed).await;
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn task_runs_shell_and_delivers_the_created_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockLlm::new().with_responder(|req| {
+        let Some(id) = task_id(req) else { return LlmResponse::text("done") };
+        if let Some(LlmMessage::ToolResults(results)) = req.messages.last() {
+            let output = results.iter().find(|r| r.name == "Shell").unwrap();
+            assert!(output.content.starts_with("Exit code: 0"), "{}", output.content);
+            assert!(output.content.contains("Hello from task"), "{}", output.content);
+            return LlmResponse::tool_call("CompleteTask", json!({"task_id":id,"status":"completed","summary":"File created and checked","verification":"Shell exited 0 and printed Hello from task","files":["hello.txt"]}));
+        }
+        let command = if cfg!(windows) {
+            "Set-Content -LiteralPath hello.txt -Value 'Hello from task' -Encoding UTF8; Get-Content -LiteralPath hello.txt"
+        } else {
+            "printf 'Hello from task\\n' > hello.txt; cat hello.txt"
+        };
+        LlmResponse::tool_call("Shell", json!({"command":command}))
+    });
+    let host = AgentHost::open(config(dir.path()), Arc::new(model)).await.unwrap();
+    let planner = host.create_agent(AgentSpec::new("Planner", "")).await.unwrap();
+    let coder = host.create_agent(AgentSpec::new("Coder", "")).await.unwrap();
+    let task = host
+        .delegate_task(
+            planner.id.as_str(),
+            DelegateTaskRequest {
+                target_id: coder.id.to_string(),
+                task: "Create a file, run a command and submit the file".into(),
+                require_files: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    eventually(|| host.task(&task.id).unwrap().status == TaskStatus::Completed).await;
+    let completed = host.task(&task.id).unwrap();
+    assert_eq!(completed.artifacts.len(), 1);
+    let content = std::fs::read_to_string(host.artifact_path(&completed.artifacts[0].id).await.unwrap()).unwrap();
+    assert_eq!(content.trim_start_matches('\u{feff}').trim(), "Hello from task");
+    eventually(|| host.transcript(planner.id.as_str(), 100).unwrap().iter().any(|e| matches!(e,
+        TranscriptEntry::SendMessage { message, .. } if message.task.as_ref().is_some_and(|t| t.id == task.id && t.status == TaskStatus::Completed)
+    ))).await;
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn complete_file_is_delivered_without_retyping_and_survives_source_deletion() {
     let dir = tempfile::tempdir().unwrap();
     let model = complete_model();

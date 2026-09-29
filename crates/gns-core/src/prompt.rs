@@ -571,7 +571,7 @@ pub fn render_workspace_section(workspace_dir: &str, data_dir: &str, agents_root
         format!("- Workspace: {workspace_dir} — Shell runs here and Read inspects files here (plus your data directory). Create and edit files with Shell; there are no built-in Write/Edit tools. Deliver full files with files on SendMessage/SendToAgent or CompleteTask, or forward artifact_ids. A path written in chat does not transfer a file."),
         format!("- Data directory: {data_dir} — your profile.json, settings.json, memory/ and automations/ live here."),
         format!("- Agents root: {agents_root} — other agents have separate workspaces. Obtain their shared files through FetchArtifact instead of reaching into their folders."),
-        "Shell runs `sh -c <command>` with a timeout; long output is truncated and spilled to a file whose path is reported back. Never try to reach outside your directories; if a task needs a path elsewhere, tell the user what you need instead.".to_owned(),
+        format!("Host OS: {}. Shell uses the executable and syntax documented in its tool description (PowerShell by default on Windows, sh elsewhere). Long output is truncated and spilled to a file whose path is reported back. Never try to reach outside your directories; if a task needs a path elsewhere, tell the user what you need instead.", std::env::consts::OS),
     ]
     .join("\n")
 }

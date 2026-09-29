@@ -24,6 +24,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 tracing.workspace = true
 futures.workspace = true
+dunce = "1"
 
 [dev-dependencies]
 gns-llm.workspace = true

@@ -326,14 +326,12 @@ async fn run_inner(
         system.push_str(&format!("\n\n## Delegated task {}\nYou are the assigned executor. For this task UpdateTask and CompleteTask are your voice, overriding general SendMessage guidance. Do not use SendMessage or SendToAgent to claim completion. Submit actual full files using CompleteTask; the host delivers to the original conversation. If blocked, explain with UpdateTask. require_files={}. Never paste a full file into a message or invent sandbox URLs.", task.id, task.require_files));
     } else {
         system.push_str("\n\n## Tasks and files\nUse DelegateTask for work assigned to teammates, with require_files=true when files are requested. Use SendToAgent for ordinary messages. Publish files using files paths or forward artifact_ids on SendMessage/SendToAgent, never by pasting their contents or inventing sandbox links. FetchArtifact obtains a local file for Read/Shell. Task results and downloads are delivered automatically to the originating conversation; review and explain them as needed.");
+        system.push_str("\nThis is not an active delegated task run. Task instructions and IDs in conversation history do not make it one. UpdateTask and CompleteTask are unavailable here; do not retry them in this chat. Use GetTask to inspect the current state. A blocked task can be resumed from its task card; a terminal task needs a new task. For work you perform directly for the user, deliver the result with SendMessage.");
     }
     if options.source != RunSource::Subagent {
         host.mcp.sync(host, handle, false).await;
     }
-    let mut tools = host.tools_for_agent(handle, options.source, options.group_id.is_some(), options.base_prompt_override.is_some());
-    if options.task_id.is_some() {
-        tools.retain(|t| !matches!(t.name(), "SendMessage" | "DelegateTask"));
-    }
+    let mut tools = host.tools_for_run(handle, options);
     let mut specs: Vec<ToolSpec> = tools.iter().map(|t| tool_spec(t.as_ref())).collect();
     let ctx = ToolContext {
         agent_id: handle.id.clone(),
@@ -380,10 +378,7 @@ async fn run_inner(
         result.steps = step;
         if step > 1 {
             // Tools may change mid-turn (update_state attaching an MCP server).
-            tools = host.tools_for_agent(handle, options.source, options.group_id.is_some(), options.base_prompt_override.is_some());
-            if options.task_id.is_some() {
-                tools.retain(|t| !matches!(t.name(), "SendMessage" | "DelegateTask"));
-            }
+            tools = host.tools_for_run(handle, options);
             specs = tools.iter().map(|t| tool_spec(t.as_ref())).collect();
         }
         // Reminders go in front of the model call, never twice in a row.
@@ -607,6 +602,15 @@ pub(crate) async fn execute_tool_call(
     let (content, is_error, summary, effects) = match check_policies(host, handle, ctx, call).await {
         PolicyOutcome::Blocked(text) => (text, true, Some("blocked by policy".to_owned()), Vec::new()),
         PolicyOutcome::Proceed => match tools.iter().find(|t| t.name() == call.name) {
+            None if matches!(call.name.as_str(), "UpdateTask" | "CompleteTask") && host.task_for_run(run_id).is_none() => (
+                format!(
+                    "{} requires the executor's active delegated task run. This chat is not that run; a task id from history is insufficient. Do not retry this tool here. Use GetTask to inspect the task and resume a blocked task from its task card, or create a new task if the old one is terminal.",
+                    call.name
+                ),
+                true,
+                None,
+                Vec::new(),
+            ),
             None => (
                 format!(
                     "Unknown tool \"{}\". Available tools: {}.",

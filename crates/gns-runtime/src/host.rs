@@ -255,6 +255,18 @@ impl HostInner {
         tools
     }
 
+    /// Task mutations are only offered to the executor's active task run,
+    /// never to a later chat turn that happens to contain its old task id.
+    pub(crate) fn tools_for_run(&self, handle: &AgentHandle, options: &RunOptions) -> Vec<Arc<dyn Tool>> {
+        let mut tools = self.tools_for_agent(handle, options.source, options.group_id.is_some(), options.base_prompt_override.is_some());
+        tools.retain(|tool| match tool.name() {
+            "UpdateTask" | "CompleteTask" => options.task_id.is_some(),
+            "SendMessage" | "DelegateTask" => options.task_id.is_none(),
+            _ => true,
+        });
+        tools
+    }
+
     /// Every tool the agent could use, with its enabled flag.
     pub(crate) fn tool_listings(&self, handle: &AgentHandle) -> Vec<ToolListing> {
         let disabled = handle.settings().tools.disabled;
@@ -1213,7 +1225,9 @@ impl AgentHost {
     /// starts their actors and the routine scheduler.
     pub async fn open(mut config: AgentHostConfig, llm: Arc<dyn LlmProvider>) -> Result<Self, HostError> {
         std::fs::create_dir_all(&config.root_dir)?;
-        config.root_dir = config.root_dir.canonicalize()?;
+        // Keep canonical paths usable by native Windows shells and commands;
+        // std::fs::canonicalize introduces a \\?\ prefix even for ordinary paths.
+        config.root_dir = dunce::canonicalize(&config.root_dir)?;
         let layout = AgentDirLayout::new(&config.root_dir);
         std::fs::create_dir_all(layout.agents_root())?;
         let (events, _) = broadcast::channel(config.event_capacity);

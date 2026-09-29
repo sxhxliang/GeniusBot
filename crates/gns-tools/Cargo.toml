@@ -20,6 +20,8 @@ serde_json.workspace = true
 schemars.workspace = true
 tracing.workspace = true
 regex.workspace = true
+base64 = "0.22"
+dunce = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

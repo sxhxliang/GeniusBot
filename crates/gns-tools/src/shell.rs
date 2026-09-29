@@ -1,7 +1,7 @@
 //! `Shell` and `AwaitShell` (`create-shell-tool.ts`, `prompts/dsv3.ts`,
 //! `formatters.ts`, `await.ts`).
 //!
-//! A command runs under `sh` in the agent's current directory (persisted per
+//! A command runs under PowerShell on Windows, `sh` elsewhere, in the agent's current directory (persisted per
 //! agent across calls). Its interleaved stdout/stderr streams to a terminal
 //! file `<workspace>/.gns/terminals/<shellId>.txt` with a `pid` /
 //! `running_for_ms` header refreshed every 5 s and an `exit_code` /
@@ -12,6 +12,7 @@
 
 use crate::paths::sandbox_path;
 use async_trait::async_trait;
+use base64::Engine;
 use gns_core::prompt::{ShellCompletion, build_shell_revival_prompt};
 use gns_core::*;
 use schemars::JsonSchema;
@@ -29,6 +30,7 @@ pub struct ShellConfig {
     pub default_block_until_ms: u64,
     /// Upper bound for `block_until_ms`.
     pub max_block_until_ms: u64,
+    /// Executable: PowerShell on Windows, a POSIX-compatible shell elsewhere.
     pub shell: String,
     /// Environment variables copied from the host process (everything else,
     /// including API keys, is withheld from the child).
@@ -40,7 +42,7 @@ impl Default for ShellConfig {
         Self {
             default_block_until_ms: SHELL_DEFAULT_BLOCK_UNTIL_MS,
             max_block_until_ms: 600_000,
-            shell: "sh".to_owned(),
+            shell: default_shell(),
             env_allowlist: [
                 "PATH",
                 "HOME",
@@ -54,11 +56,89 @@ impl Default for ShellConfig {
                 "TMPDIR",
                 "TZ",
                 "XDG_RUNTIME_DIR",
+                "SystemRoot",
+                "WINDIR",
+                "COMSPEC",
+                "PATHEXT",
+                "USERPROFILE",
+                "TEMP",
+                "TMP",
             ]
             .iter()
             .map(|s| (*s).to_owned())
             .collect(),
         }
+    }
+}
+
+fn default_shell() -> String {
+    if cfg!(windows) {
+        if let Some(shell) = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .map(|path| path.join("pwsh.exe"))
+            .find(|path| path.is_file())
+        {
+            return shell.to_string_lossy().into_owned();
+        }
+        std::env::var_os("SystemRoot")
+            .map(|root| PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe").to_string_lossy().into_owned())
+            .unwrap_or_else(|| "powershell.exe".to_owned())
+    } else {
+        "sh".to_owned()
+    }
+}
+
+impl ShellConfig {
+    fn is_powershell(&self) -> bool {
+        Path::new(&self.shell)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("powershell") || name.eq_ignore_ascii_case("pwsh"))
+    }
+
+    fn command(&self, command: &str) -> tokio::process::Command {
+        let mut process = tokio::process::Command::new(&self.shell);
+        if self.is_powershell() {
+            // EncodedCommand transports the already policy-checked command as
+            // UTF-16 without Windows argument quoting or Unicode corruption.
+            let script = format!(
+                r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
+$global:LASTEXITCODE = 0
+$gnsExitCode = 0
+try {{
+    Set-Location -LiteralPath $env:GNS_SHELL_CWD
+    & {{
+{command}
+    }}
+    $gnsSucceeded = $?
+    if ($LASTEXITCODE -ne 0) {{ $gnsExitCode = $LASTEXITCODE }}
+    elseif (-not $gnsSucceeded) {{ $gnsExitCode = 1 }}
+}} catch {{
+    [Console]::Error.WriteLine($_.ToString())
+    $gnsExitCode = 1
+}} finally {{
+    [System.IO.File]::WriteAllText($env:GNS_SHELL_CWD_FILE, (Get-Location).ProviderPath, [System.Text.UTF8Encoding]::new($false))
+}}
+exit $gnsExitCode
+"#
+            );
+            let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            process
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+                .arg(base64::engine::general_purpose::STANDARD.encode(bytes));
+        } else {
+            let script = format!(
+                "cd \"$GNS_SHELL_CWD\" || exit 1\n{command}\n__gns_rc=$?\nprintf '%s' \"$PWD\" > \"$GNS_SHELL_CWD_FILE\"\nexit $__gns_rc\n"
+            );
+            process.arg("-c").arg(script);
+        }
+        #[cfg(windows)]
+        process.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        process
     }
 }
 
@@ -103,11 +183,18 @@ struct ShellState {
 pub struct ShellTool {
     config: ShellConfig,
     state: Arc<Mutex<ShellState>>,
+    description: String,
 }
 
 impl ShellTool {
     pub fn arc(config: ShellConfig) -> Arc<dyn Tool> {
-        Typed::arc(Self { config, state: Arc::default() })
+        let dialect = if config.is_powershell() {
+            "Commands run in PowerShell with no profile. Use PowerShell syntax and UTF-8 when writing files, e.g. Set-Content -LiteralPath hello.py -Value \"print('Hello')\" -Encoding UTF8; python hello.py. Use semicolons and conditional statements instead of POSIX heredocs or &&/|| (Windows PowerShell 5.1 does not support them)."
+        } else {
+            "Commands run in a POSIX-compatible shell using -c."
+        };
+        let description = format!("Shell executable: {}. {dialect}\n\n{SHELL_DESCRIPTION}", config.shell);
+        Typed::arc(Self { config, state: Arc::default(), description })
     }
 }
 
@@ -246,7 +333,7 @@ impl TypedTool for ShellTool {
         ToolAvailability::Local
     }
     fn description(&self) -> &str {
-        SHELL_DESCRIPTION
+        &self.description
     }
     async fn run(&self, ctx: &ToolContext, args: Self::Args) -> Result<ToolOutput, ToolError> {
         let command = args.command.trim().to_owned();
@@ -276,31 +363,33 @@ impl TypedTool for ShellTool {
         let mut file = std::fs::File::create(&output_path).map_err(|e| ToolError::failed(e.to_string()))?;
         file.write_all(terminal_header(0, 0).as_bytes()).map_err(|e| ToolError::failed(e.to_string()))?;
         let err_file = file.try_clone().map_err(|e| ToolError::failed(e.to_string()))?;
-        let script = format!(
-            "cd \"$GNS_SHELL_CWD\" || exit 1\n{command}\n__gns_rc=$?\nprintf '%s' \"$PWD\" > \"$GNS_SHELL_CWD_FILE\"\nexit $__gns_rc\n"
-        );
         let started = Instant::now();
-        let spawned = tokio::process::Command::new(&self.config.shell)
-            .arg("-c")
-            .arg(&script)
-            .current_dir(&cwd)
-            .env_clear()
-            .envs(std::env::vars().filter(|(k, _)| self.config.env_allowlist.iter().any(|a| a == k)))
-            .env("GNS_AGENT_ID", ctx.agent_id.as_str())
-            .env("GNS_WORKSPACE", &ctx.workspace_dir)
-            .env("GNS_SHELL_ID", shell_id.to_string())
-            .env("GNS_SHELL_CWD", &cwd)
-            .env("GNS_SHELL_CWD_FILE", &cwd_file)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::from(file))
-            .stderr(std::process::Stdio::from(err_file))
-            .kill_on_drop(false)
-            .spawn();
+        let spawned =
+            self.config
+                .command(&command)
+                .current_dir(dunce::simplified(&cwd))
+                .env_clear()
+                .envs(std::env::vars().filter(|(k, _)| {
+                    self.config.env_allowlist.iter().any(|a| if cfg!(windows) { a.eq_ignore_ascii_case(k) } else { a == k })
+                }))
+                .env("GNS_AGENT_ID", ctx.agent_id.as_str())
+                .env("GNS_WORKSPACE", dunce::simplified(&ctx.workspace_dir))
+                .env("GNS_SHELL_ID", shell_id.to_string())
+                .env("GNS_SHELL_CWD", dunce::simplified(&cwd))
+                .env("GNS_SHELL_CWD_FILE", dunce::simplified(&cwd_file))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::from(file))
+                .stderr(std::process::Stdio::from(err_file))
+                .kill_on_drop(false)
+                .spawn();
         let mut child = match spawned {
             Ok(child) => child,
             Err(e) => {
                 let _ = std::fs::remove_file(&output_path);
-                return Ok(ToolOutput::text(format!("Error: Command failed to spawn: {e}\n\nCommand: {command}")));
+                return Err(ToolError::failed(format!(
+                    "Cannot start shell executable '{}': {e}. The command was not executed.\n\nCommand: {command}",
+                    self.config.shell
+                )));
             }
         };
         let pid = child.id().unwrap_or(0);
@@ -614,6 +703,7 @@ mod tests {
         tool.call(ctx, args).await.unwrap().content
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn shell_runs_inline_persists_cwd_and_backgrounds_slow_commands() {
         let dir = tempfile::tempdir().unwrap();
@@ -662,5 +752,83 @@ mod tests {
         assert_eq!(out, "Slept briefly.");
         let out = call(&shell, &ctx, serde_json::json!({"command": "sleep 0.2", "block_until_ms": 0})).await;
         assert!(out.starts_with("Background command started successfully.\nShell ID: 5\n"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn missing_shell_is_a_tool_error_and_names_the_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context(dir.path(), Arc::new(StubServices::default()));
+        let shell = ShellTool::arc(ShellConfig { shell: "gns-nonexistent-shell-xyz".into(), ..Default::default() });
+        let error = shell.call(&ctx, serde_json::json!({"command":"echo test"})).await.unwrap_err();
+        assert!(error.to_string().contains("Cannot start shell executable 'gns-nonexistent-shell-xyz'"));
+        assert!(error.to_string().contains("The command was not executed"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_writes_unicode_files_preserves_cwd_and_reports_exit_codes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("space and 中文 [files]");
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        let ws = ws.canonicalize().unwrap();
+        let services = Arc::new(StubServices::default());
+        let ctx = context(&ws, services);
+        let shell = ShellTool::arc(ShellConfig::default());
+        assert!(shell.description().contains("PowerShell"));
+        let out = call(&shell, &ctx, serde_json::json!({"command":
+            "Set-Content -LiteralPath 'hello.txt' -Value '你好，world' -Encoding UTF8; Get-Content -LiteralPath 'hello.txt'; Set-Location -LiteralPath sub"
+        })).await;
+        assert!(out.starts_with("Exit code: 0"), "{out}");
+        assert!(out.contains("你好，world"), "{out}");
+        assert!(std::fs::read_to_string(ws.join("hello.txt")).unwrap().contains("你好，world"));
+        let actual_cwd = out.rsplit("Current directory: ").next().unwrap();
+        assert_eq!(Path::new(actual_cwd).canonicalize().unwrap(), ws.join("sub").canonicalize().unwrap());
+        let out = call(
+            &shell,
+            &ctx,
+            serde_json::json!({"command":"Set-Content -LiteralPath cwd.txt -Value 'persisted' -Encoding UTF8; cmd.exe /c exit 7"}),
+        )
+        .await;
+        assert!(out.starts_with("Exit code: 7"), "{out}");
+        assert!(std::fs::read_to_string(ws.join("sub/cwd.txt")).unwrap().contains("persisted"));
+        let out = call(&shell, &ctx, serde_json::json!({"command":"exit 3"})).await;
+        assert!(out.starts_with("Exit code: 3"), "{out}");
+        let out = call(&shell, &ctx, serde_json::json!({"command":"definitely-not-a-command-xyz"})).await;
+        assert!(out.starts_with("Exit code: 1"), "{out}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_powershell_fallback_can_create_files_with_a_clean_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("spaces and 中文");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ctx = context(&ws, Arc::new(StubServices::default()));
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let shell = ShellTool::arc(ShellConfig { shell: executable.to_string_lossy().into_owned(), ..Default::default() });
+        let out = call(&shell, &ctx, serde_json::json!({"command":
+            "if (-not $env:Path -or -not $env:SystemRoot) { throw 'Missing Windows environment' }; Set-Content -LiteralPath hello.txt -Value '你好' -Encoding UTF8; Get-Content -LiteralPath hello.txt; cmd.exe /c exit 0"
+        })).await;
+        assert!(out.starts_with("Exit code: 0"), "{out}");
+        assert!(out.contains("你好"), "{out}");
+        assert!(std::fs::read_to_string(ws.join("hello.txt")).unwrap().contains("你好"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_background_job_finishes_and_wakes_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = Arc::new(StubServices::default());
+        let ctx = context(dir.path(), services.clone());
+        let shell = ShellTool::arc(ShellConfig::default());
+        let out =
+            call(&shell, &ctx, serde_json::json!({"command":"Start-Sleep -Milliseconds 400; Write-Output '完成'", "block_until_ms":0}))
+                .await;
+        assert!(out.contains("Background command started successfully"), "{out}");
+        let out = call(&AwaitShellTool::arc(), &ctx, serde_json::json!({"shell_id":"1","block_until_ms":10000})).await;
+        assert!(out.contains("exit code: 0"), "{out}");
+        let terminal = std::fs::read_to_string(terminals_dir(dir.path()).join("1.txt")).unwrap();
+        assert!(parse_terminal_file(&terminal).body.contains("完成"), "{terminal}");
+        assert_eq!(services.wakes.lock().unwrap().len(), 1);
     }
 }

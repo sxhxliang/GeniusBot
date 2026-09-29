@@ -12,7 +12,9 @@ LLM access goes through [`genai`](https://crates.io/crates/genai): OpenAI
 endpoint (custom base URL, key and model name via `OPENAI_BASE_URL`,
 `OPENAI_API_KEY`, `OPENAI_MODEL`) are supported out of the box; other vendors
 `genai` knows fall back to its own inference. Tools run on the local
-host, isolated per agent by directory, and MCP servers can be attached per
+host, isolated per agent by directory. Shell uses PowerShell on Windows
+(`pwsh.exe` when available, otherwise Windows PowerShell) and `sh` elsewhere;
+commands must use the corresponding shell syntax. MCP servers can be attached per
 agent. No sandbox, no browser.
 
 ## Workspace
@@ -47,6 +49,9 @@ Every agent has its own tool set, stored in its `settings.json`:
 ```
 
 * **Built-in tools** can be switched off per agent (`SendMessage` stays available on ordinary turns; task turns use `UpdateTask` / `CompleteTask`).
+  `UpdateTask` and `CompleteTask` are offered only during an active delegated
+  task run. A later chat message with an old task id does not resume that run;
+  inspect it with `GetTask` and resume a blocked task from its task card.
 * **MCP servers** are attached per agent and connected lazily when the agent's
   next turn starts (a failed server is retried once a minute and never blocks
   the turn). Each server tool becomes `mcp__<server>__<tool>`; results go
