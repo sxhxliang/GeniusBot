@@ -1,0 +1,34 @@
+[package]
+name = "gns-runtime"
+description = "Host runtime for the Genius Bot multi-agent SDK: actors, scheduling, messaging, groups, memory, routines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["agents", "multi-agent", "llm", "actor", "runtime"]
+categories = ["artificial-intelligence", "asynchronous", "concurrency"]
+
+[dependencies]
+gns-core.workspace = true
+gns-store.workspace = true
+gns-tools.workspace = true
+gns-mcp.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+tracing.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+gns-llm.workspace = true
+tempfile.workspace = true
+schemars.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "gns-tools"
+description = "Built-in tools for the Genius Bot multi-agent SDK (messaging, state, local shell/files)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["agents", "llm", "tools", "shell", "tool-calling"]
+categories = ["artificial-intelligence", "filesystem"]
+
+[dependencies]
+gns-core.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

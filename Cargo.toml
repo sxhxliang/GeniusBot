@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gns-core",
+    "crates/gns-llm",
+    "crates/gns-store",
+    "crates/gns-tools",
+    "crates/gns-runtime",
+    "crates/gns-cli",
+    "crates/gns-mcp",
+    "crates/gns-server",
+]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+repository = "https://github.com/sxhxliang/GeniusBot.git"
+readme = "README.md"
+
+[workspace.dependencies]
+gns-core = { path = "crates/gns-core", version = "0.1.1" }
+gns-llm = { path = "crates/gns-llm", version = "0.1.1" }
+gns-store = { path = "crates/gns-store", version = "0.1.1" }
+gns-tools = { path = "crates/gns-tools", version = "0.1.1" }
+gns-runtime = { path = "crates/gns-runtime", version = "0.1.1" }
+gns-mcp = { path = "crates/gns-mcp", version = "0.1.1" }
+
+genai = "0.7.0-beta"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "fs", "io-util", "signal", "net"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex = "1"
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

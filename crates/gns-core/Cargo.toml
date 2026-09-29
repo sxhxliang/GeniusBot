@@ -1,0 +1,26 @@
+[package]
+name = "gns-core"
+description = "Core types and extension traits for the Genius Bot multi-agent SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["agents", "multi-agent", "llm", "ai", "sdk"]
+categories = ["artificial-intelligence", "asynchronous"]
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+regex.workspace = true
+
+[lints]
+workspace = true

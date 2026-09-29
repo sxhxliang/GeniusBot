@@ -1,0 +1,28 @@
+[package]
+name = "gns-store"
+description = "SQLite and file-based persistence for the Genius Bot multi-agent SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["sqlite", "agents", "llm", "persistence", "transcript"]
+categories = ["artificial-intelligence", "database"]
+
+[dependencies]
+gns-core.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+sha2 = "0.10"
+mime_guess = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

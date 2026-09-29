@@ -1,0 +1,24 @@
+[package]
+name = "gns-llm"
+description = "genai-backed LLM provider (and a scripted mock) for the Genius Bot multi-agent SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["llm", "openai", "genai", "agents", "streaming"]
+categories = ["artificial-intelligence", "api-bindings"]
+
+[dependencies]
+gns-core.workspace = true
+genai.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

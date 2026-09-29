@@ -1,0 +1,50 @@
+[package]
+name = "gns-server"
+description = "HTTP API and embedded React debug console for the Genius Bot multi-agent SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["agents", "multi-agent", "llm", "http", "debugging"]
+categories = ["artificial-intelligence", "web-programming::http-server"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/web/dist/**",
+    "/build.rs",
+    "/README.md",
+    "/LICENSE-*",
+]
+[[bin]]
+name = "gns-server"
+path = "src/main.rs"
+
+[dependencies]
+gns-core.workspace = true
+gns-llm.workspace = true
+gns-runtime.workspace = true
+gns-tools.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+axum = "0.8"
+tokio-stream = { version = "0.1", features = ["sync"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

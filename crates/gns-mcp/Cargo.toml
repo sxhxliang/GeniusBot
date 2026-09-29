@@ -1,0 +1,29 @@
+[package]
+name = "gns-mcp"
+description = "Minimal Model Context Protocol client (stdio + streamable HTTP) exposing MCP tools as Genius Bot tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["mcp", "llm", "agents", "json-rpc", "tools"]
+categories = ["artificial-intelligence", "network-programming", "api-bindings"]
+
+[dependencies]
+gns-core.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

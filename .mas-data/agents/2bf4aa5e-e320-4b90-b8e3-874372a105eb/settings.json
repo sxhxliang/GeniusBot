@@ -1,0 +1,8 @@
+{
+  "notifyOnAgentUpdates": true,
+  "hiddenFromSidebar": false,
+  "tools": {
+    "disabled": []
+  },
+  "mcpServers": []
+}

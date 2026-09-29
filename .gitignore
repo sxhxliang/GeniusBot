@@ -1,0 +1,8 @@
+node_modules/
+
+# Rust SDK build output
+target
+gns-data
+target
+.gns-data
+/docs
